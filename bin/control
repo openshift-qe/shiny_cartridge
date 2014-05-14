@@ -1,0 +1,77 @@
+#!/bin/bash
+
+function start() {
+    echo "Starting Shiny cartridge"
+    pushd "$OPENSHIFT_REPO_DIR" > /dev/null
+    {
+        echo "`date +"$FMT"`: Starting application '$OPENSHIFT_APP_NAME' ..."
+    } >> $logf
+
+
+    retries=3
+    while [ $retries -gt 0 ]; do
+      cart_pid=$(cartridge_pid)
+      [ -n "${cart_pid}" ] && break
+      sleep 1
+      let retries=${retries}-1
+    done
+
+    popd > /dev/null
+    if [ -n "${cart_pid}" ]; then
+        echo "$cart_pid" > "$OPENSHIFT_SHINY_PID_DIR/cartridge.pid"
+    else
+        error "Application '$OPENSHIFT_APP_NAME' failed to start" 1>&2 1
+    fi
+}
+
+function stop() {
+    echo "Stopping Shiny cartridge"
+
+    if [ -f $OPENSHIFT_SHINY_PID_DIR/cartridge.pid ]; then
+      cart_pid=$( cat $OPENSHIFT_SHINY_PID_DIR/cartridge.pid 2> /dev/null )
+      running_cart_pid=$(cartridge_pid)
+
+      if [ "${cart_pid}" != "${running_cart_pid}" ]; then
+        error "Warning: Application '$OPENSHIFT_APP_NAME' shiny PID ($running_cart_pid) does not match '\$OPENSHIFT_SHINY_PID_DIR/cartridge.pid' ($cart_pid).  Use force-stop to kill." 141
+      else
+        logf="$OPENSHIFT_SHINY_LOG_DIR/shiny.log"
+        echo "`date +"$FMT"`: Stopping application '$OPENSHIFT_APP_NAME' ..." >> $logf
+        /bin/kill $cart_pid
+        ret=$?
+        if [ $ret -eq 0 ]; then
+          TIMEOUT="$STOPTIMEOUT"
+          while [ $TIMEOUT -gt 0 ]  && is_cartridge_running ; do
+            /bin/kill -0 "$cart_pid" >/dev/null 2>&1 || break
+            sleep 1
+            let TIMEOUT=${TIMEOUT}-1
+          done
+        fi
+
+        # Make Node go down forcefully if it is still running.
+        if is_cartridge_running ; then
+          pkill -f "$(cartridge_bin)" 2>&1 || :
+        fi
+
+        if is_cartridge_running ; then
+          error "Warning: Application '$OPENSHIFT_APP_NAME' unable to stop. Use force-stop to kill." 141
+        else
+          echo "`date +"$FMT"`: Stopped Node application '$OPENSHIFT_APP_NAME'" >> $logf
+          rm -f $OPENSHIFT_SHINY_PID_DIR/cartridge.pid
+        fi
+      fi
+    else
+      if [ -n "$(cartridge_pid)" ]; then
+        error "Warning: Application '$OPENSHIFT_APP_NAME' shiny exists without a pid file.  Use force-stop to kill." 141
+      fi
+    fi
+}
+
+
+case "$1" in
+    start)               start       ;;
+#    restart|graceful)    restart     ;;
+    graceful-stop|stop)  stop        ;;
+#    status)              status      ;;
+    *) exit 0;
+esac
+
